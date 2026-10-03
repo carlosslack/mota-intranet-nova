@@ -2,6 +2,7 @@ services:
   intranet:
     image: ghcr.io/carlosslack/mota-intranet-nova:${IMAGE_TAG}
     restart: unless-stopped
+    network_mode: bridge
     environment:
       NODE_ENV: production
       PORT: 3002

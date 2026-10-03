@@ -10,7 +10,7 @@ COPY . .
 ARG VITE_GOOGLE_CLIENT_ID
 ENV VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
 
-RUN npm run build
+RUN test -n "$VITE_GOOGLE_CLIENT_ID" && npm run build
 
 FROM node:24-alpine AS runtime
 
