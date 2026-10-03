@@ -1,0 +1,31 @@
+services:
+  intranet:
+    image: ghcr.io/carlosslack/mota-intranet-nova:${IMAGE_TAG}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3002
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      SESSION_SECRET: ${SESSION_SECRET}
+      ALLOWED_EMAIL_DOMAIN: mota.adv.br
+      ADMIN_EMAILS: ti@mota.adv.br
+      DATA_DIR: /app/data
+    volumes:
+      - intranet-data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3002/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.mota-intranet-nova.rule=Host(`intranet.motaadv.net`)
+      - traefik.http.routers.mota-intranet-nova.entrypoints=websecure
+      - traefik.http.routers.mota-intranet-nova.priority=100
+      - traefik.http.routers.mota-intranet-nova.tls=true
+      - traefik.http.routers.mota-intranet-nova.tls.certresolver=letsencrypt
+      - traefik.http.services.mota-intranet-nova.loadbalancer.server.port=3002
+
+volumes:
+  intranet-data:
