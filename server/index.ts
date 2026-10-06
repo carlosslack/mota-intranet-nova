@@ -88,6 +88,46 @@ type ContentEntry = {
   createdAt: string;
 };
 
+const builtInWikiEntries: ContentEntry[] = [
+  {
+    id: "guia-videochamada-intranet",
+    module: "wiki",
+    authorId: "intranet",
+    authorName: "Intranet Mota",
+    title: "Como agendar uma videochamada pela intranet",
+    subtitle: "Google Meet e Agenda",
+    body: [
+      "1. Entre na intranet com sua conta corporativa Google.",
+      "2. Na Visão geral, clique em Videochamada, em Ferramentas especializadas. Você também pode abrir Workspace > Agendar Google Meet.",
+      "3. Informe o assunto, a data e os horários de início e término. O término deve ser posterior ao início.",
+      "4. Em Participantes, digite os e-mails separados por vírgula. Deixe o campo vazio se não quiser enviar convites. A pauta e as observações são opcionais.",
+      "5. Clique em Criar reunião e Google Meet. Se o Google pedir autorização para usar sua Agenda, escolha a conta corporativa e conclua a permissão.",
+      "6. Na confirmação, use Entrar no Meet para abrir a chamada ou Ver no Calendar para consultar o evento. Os participantes informados recebem o convite por e-mail.",
+      "Se a janela de autorização não abrir, permita pop-ups para a intranet e tente novamente. Se aparecer uma mensagem de erro, informe o texto à Central de TI.",
+    ].join("\n\n"),
+    createdAt: "2026-10-06T12:00:00.000Z",
+  },
+  {
+    id: "guia-chamados-ti-intranet",
+    module: "wiki",
+    authorId: "intranet",
+    authorName: "Intranet Mota",
+    title: "Como abrir e acompanhar um chamado de TI",
+    subtitle: "Central de TI",
+    body: [
+      "1. Abra Central de TI pelo menu lateral ou pelo atalho Acessar chamados na Visão geral. Clique em Novo chamado.",
+      "2. Preencha o assunto, escolha a categoria e a prioridade. Informe o sistema, tribunal ou equipamento afetado, o impacto e um prazo relacionado, quando houver.",
+      "3. Em O que aconteceu?, descreva o problema, a mensagem de erro e o que você precisa concluir. Use O que você já tentou? para registrar testes feitos antes de pedir ajuda.",
+      "4. Clique em Registrar chamado. Anote o número do protocolo exibido e use Acompanhar chamado para abrir o atendimento.",
+      "5. Em Chamados, selecione o protocolo para ver o status, o responsável e o histórico. Use a busca e os filtros para localizar um atendimento.",
+      "6. Quando a equipe de TI pedir informações, escreva em Responder à equipe de TI e clique em Enviar resposta. Se o chamado estiver Resolvido, mas o problema continuar, use Reabrir chamado e explique o que ainda não funciona.",
+      "Use a prioridade Urgente apenas para prazo processual imediato, indisponibilidade geral ou bloqueio completo do trabalho. Não coloque senhas, códigos de verificação ou chaves de acesso no chamado.",
+      "Equipe de TI: os administradores podem assumir o chamado, ajustar etapa e prioridade, registrar o andamento e descrever a solução antes de resolver.",
+    ].join("\n\n"),
+    createdAt: "2026-10-06T12:00:01.000Z",
+  },
+];
+
 async function createSession(user: SessionUser) {
   return new SignJWT({
     name: user.name,
@@ -452,7 +492,7 @@ app.get("/api/content/:module", async (request, response) => {
   }
   const entries = await readContent();
   return response.json({
-    entries: entries
+    entries: (module === "wiki" ? [...builtInWikiEntries, ...entries] : entries)
       .filter((entry) => entry.module === module)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
   });
