@@ -336,7 +336,7 @@
 }
 .features-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 .feature-card {
@@ -607,6 +607,11 @@
   color: #bec8d3;
   font-size: 11px;
   font-weight: 700;
+}
+.meeting-form__hint {
+  color: #94a2b3;
+  font-size: inherit;
+  font-weight: 400;
 }
 .meeting-form input,
 .meeting-form textarea {

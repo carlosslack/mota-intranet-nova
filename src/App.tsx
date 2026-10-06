@@ -408,6 +408,13 @@ function Dashboard({ navigate }: { navigate: (section: Section) => void }) {
           onClick={() => navigate("financeiro")}
         />
         <FeatureCard
+          icon={<Video size={21} />}
+          title="Videochamada"
+          description="Agende uma reunião com Google Meet e convide os participantes."
+          action="Agendar reunião"
+          onClick={() => navigate("reunioes")}
+        />
+        <FeatureCard
           icon={<CircleHelp size={21} />}
           title="Precisa de ajuda?"
           description="Acesse a Central de TI para registrar uma solicitação."

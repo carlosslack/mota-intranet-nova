@@ -302,7 +302,9 @@ export function MeetingScheduler() {
           </label>
         </div>
         <label>
-          <span>Participantes</span>
+          <span>
+            Participantes <small className="meeting-form__hint">(Separe os e-mails por vírgula)</small>
+          </span>
           <input
             value={participants}
             onChange={(event) => setParticipants(event.target.value)}
