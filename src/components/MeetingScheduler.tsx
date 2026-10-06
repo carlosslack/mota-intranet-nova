@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   AlertCircle,
   CalendarCheck2,
@@ -10,7 +10,7 @@ import {
 type CreatedMeeting = { meetLink: string; calendarLink: string; title: string };
 
 function loadGoogleIdentity() {
-  if (window.google) return Promise.resolve();
+  if (window.google?.accounts?.oauth2) return Promise.resolve();
   return new Promise<void>((resolve, reject) => {
     const existing = document.querySelector<HTMLScriptElement>(
       'script[src="https://accounts.google.com/gsi/client"]',
@@ -45,8 +45,36 @@ export function MeetingScheduler() {
   const [participants, setParticipants] = useState("");
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(false);
+  const [phase, setPhase] = useState<"authorizing" | "creating">("authorizing");
+  const [googleReady, setGoogleReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedMeeting | null>(null);
+  const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const authorizationPending = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    loadGoogleIdentity()
+      .then(() => {
+        if (active) setGoogleReady(true);
+      })
+      .catch((reason) => {
+        if (active)
+          setError(reason instanceof Error ? reason.message : "Autenticação Google indisponível.");
+      });
+    return () => {
+      active = false;
+      authorizationPending.current = false;
+      if (pendingTimer.current) clearTimeout(pendingTimer.current);
+    };
+  }, []);
+
+  const finishRequest = () => {
+    authorizationPending.current = false;
+    if (pendingTimer.current) clearTimeout(pendingTimer.current);
+    pendingTimer.current = null;
+    setLoading(false);
+  };
   const createMeeting = async (accessToken: string) => {
     const attendeeEmails = participants
       .split(",")
@@ -98,7 +126,7 @@ export function MeetingScheduler() {
       calendarLink: body.htmlLink,
     });
   };
-  const handleSubmit = async (event: FormEvent) => {
+  const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
     setError(null);
     setCreated(null);
@@ -114,19 +142,29 @@ export function MeetingScheduler() {
       );
       return;
     }
+    if (!googleReady || !window.google?.accounts?.oauth2) {
+      setError("A autenticação Google ainda não está disponível. Recarregue a página e tente novamente.");
+      return;
+    }
+    if (authorizationPending.current) return;
+    authorizationPending.current = true;
+    setPhase("authorizing");
     setLoading(true);
     try {
-      await loadGoogleIdentity();
-      if (!window.google) throw new Error("Autenticação Google indisponível.");
       const tokenClient = window.google.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: "https://www.googleapis.com/auth/calendar.events",
         callback: async ({ access_token, error: oauthError }) => {
+          if (!authorizationPending.current) return;
+          authorizationPending.current = false;
+          if (pendingTimer.current) clearTimeout(pendingTimer.current);
+          pendingTimer.current = null;
           try {
             if (oauthError || !access_token)
               throw new Error(
                 "A permissão para criar eventos na Agenda não foi concedida.",
               );
+            setPhase("creating");
             await createMeeting(access_token);
           } catch (reason) {
             setError(
@@ -135,10 +173,25 @@ export function MeetingScheduler() {
                 : "Não foi possível criar a reunião.",
             );
           } finally {
-            setLoading(false);
+            finishRequest();
           }
         },
+        error_callback: ({ type }) => {
+          if (!authorizationPending.current) return;
+          setError(
+            type === "popup_failed_to_open"
+              ? "O navegador bloqueou a janela de autorização do Google. Permita pop-ups para esta intranet e tente novamente."
+              : type === "popup_closed"
+                ? "A autorização do Google foi fechada antes de terminar. Tente novamente e conclua a permissão da Agenda."
+                : `Não foi possível abrir a autorização Google (${type}).`,
+          );
+          finishRequest();
+        },
       });
+      pendingTimer.current = setTimeout(() => {
+        setError("O Google não respondeu à autorização. Verifique se uma janela de login foi bloqueada e tente novamente.");
+        finishRequest();
+      }, 90000);
       tokenClient.requestAccessToken({ prompt: "consent" });
     } catch (reason) {
       setError(
@@ -146,7 +199,7 @@ export function MeetingScheduler() {
           ? reason.message
           : "Não foi possível iniciar a autorização Google.",
       );
-      setLoading(false);
+      finishRequest();
     }
   };
   if (created)
@@ -275,10 +328,15 @@ export function MeetingScheduler() {
             {error}
           </p>
         )}
-        <button type="submit" className="primary-button" disabled={loading}>
+        <button type="submit" className="primary-button" disabled={loading || !googleReady}>
           {loading ? (
             <>
-              <LoaderCircle className="spin" size={16} /> Criando reunião…
+              <LoaderCircle className="spin" size={16} />
+              {phase === "authorizing" ? "Aguardando autorização Google…" : "Criando reunião…"}
+            </>
+          ) : !googleReady ? (
+            <>
+              <LoaderCircle className="spin" size={16} /> Carregando autorização Google…
             </>
           ) : (
             <>
