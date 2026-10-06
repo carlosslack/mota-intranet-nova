@@ -27,6 +27,7 @@ import { LoginScreen, type SessionUser } from "./components/LoginScreen";
 import { MeetingScheduler } from "./components/MeetingScheduler";
 import { SupportCenter as ConnectedSupportCenter } from "./components/SupportCenter";
 import { ContentWorkspace } from "./components/ContentWorkspace";
+import { CrmWorkspace } from "./components/CrmWorkspace";
 import "./App.css";
 
 type Section =
@@ -557,8 +558,10 @@ function App() {
             <ContentWorkspace module="wiki" user={user} />
           ) : section === "comunicados" ? (
             <ContentWorkspace module="comunicacao" user={user} />
+          ) : section === "crm" && user.isAdmin ? (
+            <CrmWorkspace user={user} />
           ) : section === "crm" ? (
-            <ContentWorkspace module="crm" user={user} />
+            <EmptyState section={"crm"} />
           ) : (
             <EmptyState section={section} />
           )}

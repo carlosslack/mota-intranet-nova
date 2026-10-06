@@ -502,6 +502,388 @@ app.post("/api/content/:module", async (request, response) => {
   return response.status(201).json({ entry });
 });
 
+// ===== CRM - modulo de relacionamento (restrito a administracao) =====
+
+type CrmCompanyType = "pf" | "pj";
+type CrmCompanyStatus = "ativo" | "prospect" | "inativo";
+type CrmContactChannel = "email" | "telefone" | "whatsapp";
+type CrmInteractionType = "ligacao" | "reuniao" | "email" | "andamento" | "outro";
+
+type CrmContact = { id: string; name: string; role?: string; email?: string; phone?: string; channel?: CrmContactChannel; createdAt: string };
+
+type CrmCompany = { id: string; name: string; type: CrmCompanyType; document?: string; area?: string; tags: string[]; status: CrmCompanyStatus; owner?: string; notes?: string; contacts: CrmContact[]; createdAt: string; updatedAt: string };
+
+type CrmInteraction = { id: string; companyId: string; contactId?: string; type: CrmInteractionType; summary: string; detail?: string; nextStep?: string; nextStepDate?: string; nextStepCompletedAt?: string; authorId: string; authorName: string; createdAt: string };
+
+const crmCompaniesFile = path.join(dataDirectory, "crm-companies.json");
+const crmInteractionsFile = path.join(dataDirectory, "crm-interactions.json");
+const crmCompanyStatuses: CrmCompanyStatus[] = ["ativo", "prospect", "inativo"];
+const crmInteractionTypes: CrmInteractionType[] = ["ligacao", "reuniao", "email", "andamento", "outro"];
+const crmChannels: CrmContactChannel[] = ["email", "telefone", "whatsapp"];
+
+async function readCrmCompanies(): Promise<CrmCompany[]> {
+  try {
+    return JSON.parse(await readFile(crmCompaniesFile, "utf8")) as CrmCompany[];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function saveCrmCompanies(companies: CrmCompany[]) {
+  await mkdir(dataDirectory, { recursive: true });
+  await writeFile(crmCompaniesFile, JSON.stringify(companies, null, 2), "utf8");
+}
+
+async function readCrmInteractions(): Promise<CrmInteraction[]> {
+  try {
+    return JSON.parse(await readFile(crmInteractionsFile, "utf8")) as CrmInteraction[];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function saveCrmInteractions(interactions: CrmInteraction[]) {
+  await mkdir(dataDirectory, { recursive: true });
+  await writeFile(crmInteractionsFile, JSON.stringify(interactions, null, 2), "utf8");
+}
+
+async function requireCrmAdmin(request: express.Request, response: express.Response): Promise<SessionUser | null> {
+  const user = await getRequestUser(request);
+  if (!user) {
+    response.status(401).json({ error: "Sessao ausente ou expirada." });
+    return null;
+  }
+  if (!isAdmin(user)) {
+    response.status(403).json({ error: "O CRM e restrito a administracao." });
+    return null;
+  }
+  return user;
+}
+
+function crmOptionalText(source: Record<string, unknown>, key: string, maxLength: number): { value?: string; tooLong: boolean } {
+  const raw = source[key];
+  if (typeof raw !== "string" || raw.trim() === "") return {};
+  const trimmed = raw.trim();
+  return trimmed.length > maxLength ? { tooLong: true } : { value: trimmed };
+}
+
+function crmTags(source: Record<string, unknown>): { value?: string[]; invalid?: boolean } {
+  const raw = source.tags;
+  if (raw === undefined || raw === null) return {};
+  if (!Array.isArray(raw)) return { invalid: true };
+  const tags = Array.from(new Set(raw.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean).slice(0, 10)));
+  if (tags.some((item) => item.length > 40)) return { invalid: true };
+  return { value: tags };
+}
+
+type CrmCompanyInput = { name: string; type: CrmCompanyType; status: CrmCompanyStatus; document?: string; area?: string; tags: string[]; owner?: string; notes?: string };
+
+function parseCrmCompanyInput(body: unknown): { ok: true; value: CrmCompanyInput } | { ok: false; error: string } {
+  const source = (body ?? {}) as Record<string, unknown>;
+  const name = typeof source.name === "string" ? source.name.trim() : "";
+  if (!name) return { ok: false, error: "Informe o nome do cliente." };
+  if (name.length > 160) return { ok: false, error: "O nome excede o tamanho permitido." };
+  if (source.type !== "pf" && source.type !== "pj") return { ok: false, error: "Informe o tipo de cliente (pf ou pj)." };
+  if (typeof source.status !== "string" || !crmCompanyStatuses.includes(source.status as CrmCompanyStatus)) return { ok: false, error: "Situacao invalida." };
+  const document = crmOptionalText(source, "document", 24);
+  if (document.tooLong) return { ok: false, error: "O documento excede o tamanho permitido." };
+  const area = crmOptionalText(source, "area", 120);
+  if (area.tooLong) return { ok: false, error: "A area de atuacao excede o tamanho permitido." };
+  const owner = crmOptionalText(source, "owner", 120);
+  if (owner.tooLong) return { ok: false, error: "O responsavel excede o tamanho permitido." };
+  const notes = crmOptionalText(source, "notes", 2000);
+  if (notes.tooLong) return { ok: false, error: "As observacoes excedem o tamanho permitido." };
+  const tags = crmTags(source);
+  if (tags.invalid) return { ok: false, error: "Etiquetas invalidas." };
+  return { ok: true, value: { name, type: source.type, status: source.status as CrmCompanyStatus, document: document.value, area: area.value, tags: tags.value ?? [], owner: owner.value, notes: notes.value } };
+}
+
+function crmInteractionLabel(type: CrmInteractionType): string {
+  const labels: Record<CrmInteractionType, string> = { ligacao: "Ligacao", reuniao: "Reuniao", email: "E-mail", andamento: "Andamento", outro: "Outro" };
+  return labels[type];
+}
+
+function crmTodayKey(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+function isValidCrmDateKey(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+
+function parseCrmInteractionInput(body: unknown): { ok: true; value: { contactId?: string; type: CrmInteractionType; summary: string; detail?: string; nextStep?: string; nextStepDate?: string } } | { ok: false; error: string } {
+  const source = (body ?? {}) as Record<string, unknown>;
+  if (typeof source.type !== "string" || !crmInteractionTypes.includes(source.type as CrmInteractionType)) return { ok: false, error: "Tipo de interacao invalido." };
+  const summary = typeof source.summary === "string" ? source.summary.trim() : "";
+  if (!summary) return { ok: false, error: "Informe o resumo da interacao." };
+  if (summary.length > 400) return { ok: false, error: "O resumo excede o tamanho permitido." };
+  const detail = crmOptionalText(source, "detail", 4000);
+  if (detail.tooLong) return { ok: false, error: "O detalhamento excede o tamanho permitido." };
+  const nextStep = crmOptionalText(source, "nextStep", 300);
+  if (nextStep.tooLong) return { ok: false, error: "O proximo passo excede o tamanho permitido." };
+  const nextStepDate = crmOptionalText(source, "nextStepDate", 10);
+  if (nextStepDate.tooLong || (nextStepDate.value && !isValidCrmDateKey(nextStepDate.value))) return { ok: false, error: "Data do proximo passo invalida." };
+  const contactId = crmOptionalText(source, "contactId", 80);
+  return { ok: true, value: { contactId: contactId.value, type: source.type as CrmInteractionType, summary, detail: detail.value, nextStep: nextStep.value, nextStepDate: nextStepDate.value } };
+}
+// ===== CRM - endpoints =====
+
+app.get("/api/crm/summary", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  const companies = await readCrmCompanies();
+  const interactions = await readCrmInteractions();
+  const today = crmTodayKey();
+  const horizon = new Date(`${today}T12:00:00-03:00`);
+  horizon.setDate(horizon.getDate() + 7);
+  const horizonKey = horizon.toISOString().slice(0, 10);
+  const companyNameOf = (companyId: string) => companies.find((company) => company.id === companyId)?.name ?? "Cliente removido";
+  const withFollowUp = interactions
+    .filter((item) => typeof item.nextStepDate === "string" && item.nextStepDate !== "" && !item.nextStepCompletedAt)
+    .sort((left, right) => (left.nextStepDate ?? "").localeCompare(right.nextStepDate ?? ""))
+    .map((item) => ({ id: item.id, companyId: item.companyId, companyName: companyNameOf(item.companyId), type: item.type, typeLabel: crmInteractionLabel(item.type), summary: item.summary, nextStep: item.nextStep, nextStepDate: item.nextStepDate }));
+  return response.json({
+    totals: {
+      clients: companies.length,
+      active: companies.filter((company) => company.status === "ativo").length,
+      prospects: companies.filter((company) => company.status === "prospect").length,
+      interactions: interactions.length,
+    },
+    followUps: {
+      overdue: withFollowUp.filter((item) => (item.nextStepDate ?? "") < today),
+      today: withFollowUp.filter((item) => item.nextStepDate === today),
+      upcoming: withFollowUp.filter((item) => (item.nextStepDate ?? "") > today && (item.nextStepDate ?? "") <= horizonKey),
+    },
+  });
+});
+
+app.get("/api/crm/companies", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  const companies = await readCrmCompanies();
+  const interactions = await readCrmInteractions();
+  const query = ((request.query.q as string | undefined) ?? "").trim().toLowerCase();
+  const status = ((request.query.status as string | undefined) ?? "").trim();
+  const tag = ((request.query.tag as string | undefined) ?? "").trim().toLowerCase();
+  const lastInteraction = new Map<string, string>();
+  for (const item of interactions) {
+    const current = lastInteraction.get(item.companyId);
+    if (!current || item.createdAt > current) lastInteraction.set(item.companyId, item.createdAt);
+  }
+  const filtered = companies
+    .filter((company) => {
+      if (status && crmCompanyStatuses.includes(status as CrmCompanyStatus) && company.status !== status) return false;
+      if (tag && !company.tags.some((item) => item.toLowerCase() === tag)) return false;
+      if (query) {
+        const haystack = [company.name, company.area ?? "", company.document ?? "", company.owner ?? "", ...company.tags].join(" ").toLowerCase();
+        if (!haystack.includes(query)) return false;
+      }
+      return true;
+    })
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .map((company) => ({ ...company, contactCount: company.contacts.length, lastInteractionAt: lastInteraction.get(company.id) }));
+  return response.json({ companies: filtered });
+});
+
+app.post("/api/crm/companies", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  const parsed = parseCrmCompanyInput(request.body);
+  if (!parsed.ok) return response.status(400).json({ error: parsed.error });
+  const now = new Date().toISOString();
+  const company: CrmCompany = { id: crypto.randomUUID(), ...parsed.value, contacts: [], createdAt: now, updatedAt: now };
+  const companies = await readCrmCompanies();
+  companies.push(company);
+  await saveCrmCompanies(companies);
+  return response.status(201).json({ company });
+});
+
+app.get("/api/crm/companies/:id", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  const companies = await readCrmCompanies();
+  const company = companies.find((item) => item.id === request.params.id);
+  if (!company) return response.status(404).json({ error: "Cliente nao encontrado." });
+  const interactions = (await readCrmInteractions()).filter((item) => item.companyId === company.id).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  return response.json({ company, interactions });
+});
+
+app.patch("/api/crm/companies/:id", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  const companies = await readCrmCompanies();
+  const company = companies.find((item) => item.id === request.params.id);
+  if (!company) return response.status(404).json({ error: "Cliente nao encontrado." });
+  const parsed = parseCrmCompanyInput(request.body);
+  if (!parsed.ok) return response.status(400).json({ error: parsed.error });
+  company.name = parsed.value.name;
+  company.type = parsed.value.type;
+  company.status = parsed.value.status;
+  company.document = parsed.value.document;
+  company.area = parsed.value.area;
+  company.tags = parsed.value.tags;
+  company.owner = parsed.value.owner;
+  company.notes = parsed.value.notes;
+  company.updatedAt = new Date().toISOString();
+  await saveCrmCompanies(companies);
+  return response.json({ company });
+});
+
+app.delete("/api/crm/companies/:id", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  const companies = await readCrmCompanies();
+  const index = companies.findIndex((item) => item.id === request.params.id);
+  if (index === -1) return response.status(404).json({ error: "Cliente nao encontrado." });
+  companies.splice(index, 1);
+  await saveCrmCompanies(companies);
+  await saveCrmInteractions((await readCrmInteractions()).filter((item) => item.companyId !== request.params.id));
+  return response.status(204).end();
+});
+
+app.post("/api/crm/companies/:id/contacts", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  const companies = await readCrmCompanies();
+  const company = companies.find((item) => item.id === request.params.id);
+  if (!company) return response.status(404).json({ error: "Cliente nao encontrado." });
+  const source = (request.body ?? {}) as Record<string, unknown>;
+  const name = typeof source.name === "string" ? source.name.trim() : "";
+  if (!name) return response.status(400).json({ error: "Informe o nome do contato." });
+  if (name.length > 160) return response.status(400).json({ error: "O nome do contato excede o tamanho permitido." });
+  const role = crmOptionalText(source, "role", 120);
+  if (role.tooLong) return response.status(400).json({ error: "O cargo excede o tamanho permitido." });
+  const email = crmOptionalText(source, "email", 160);
+  if (email.tooLong) return response.status(400).json({ error: "O e-mail excede o tamanho permitido." });
+  const phone = crmOptionalText(source, "phone", 40);
+  if (phone.tooLong) return response.status(400).json({ error: "O telefone excede o tamanho permitido." });
+  const channel = typeof source.channel === "string" && crmChannels.includes(source.channel as CrmContactChannel) ? (source.channel as CrmContactChannel) : undefined;
+  const contact: CrmContact = { id: crypto.randomUUID(), name, role: role.value, email: email.value, phone: phone.value, channel, createdAt: new Date().toISOString() };
+  company.contacts.push(contact);
+  company.updatedAt = new Date().toISOString();
+  await saveCrmCompanies(companies);
+  return response.status(201).json({ company, contact });
+});
+
+app.patch("/api/crm/companies/:id/contacts/:contactId", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  const companies = await readCrmCompanies();
+  const company = companies.find((item) => item.id === request.params.id);
+  if (!company) return response.status(404).json({ error: "Cliente nao encontrado." });
+  const contact = company.contacts.find((item) => item.id === request.params.contactId);
+  if (!contact) return response.status(404).json({ error: "Contato nao encontrado." });
+  const source = (request.body ?? {}) as Record<string, unknown>;
+  const name = typeof source.name === "string" ? source.name.trim() : "";
+  if (!name) return response.status(400).json({ error: "Informe o nome do contato." });
+  if (name.length > 160) return response.status(400).json({ error: "O nome do contato excede o tamanho permitido." });
+  const role = crmOptionalText(source, "role", 120);
+  if (role.tooLong) return response.status(400).json({ error: "O cargo excede o tamanho permitido." });
+  const email = crmOptionalText(source, "email", 160);
+  if (email.tooLong) return response.status(400).json({ error: "O e-mail excede o tamanho permitido." });
+  const phone = crmOptionalText(source, "phone", 40);
+  if (phone.tooLong) return response.status(400).json({ error: "O telefone excede o tamanho permitido." });
+  const channel = typeof source.channel === "string" && crmChannels.includes(source.channel as CrmContactChannel) ? (source.channel as CrmContactChannel) : undefined;
+  contact.name = name;
+  contact.role = role.value;
+  contact.email = email.value;
+  contact.phone = phone.value;
+  contact.channel = channel;
+  company.updatedAt = new Date().toISOString();
+  await saveCrmCompanies(companies);
+  return response.json({ company, contact });
+});
+
+app.delete("/api/crm/companies/:id/contacts/:contactId", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  const companies = await readCrmCompanies();
+  const company = companies.find((item) => item.id === request.params.id);
+  if (!company) return response.status(404).json({ error: "Cliente nao encontrado." });
+  const index = company.contacts.findIndex((item) => item.id === request.params.contactId);
+  if (index === -1) return response.status(404).json({ error: "Contato nao encontrado." });
+  const removedId = company.contacts[index].id;
+  company.contacts.splice(index, 1);
+  company.updatedAt = new Date().toISOString();
+  await saveCrmCompanies(companies);
+  const interactions = await readCrmInteractions();
+  let changed = false;
+  for (const item of interactions) {
+    if (item.contactId === removedId) {
+      item.contactId = undefined;
+      changed = true;
+    }
+  }
+  if (changed) await saveCrmInteractions(interactions);
+  return response.status(204).end();
+});
+
+app.get("/api/crm/interactions", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  const companyId = ((request.query.companyId as string | undefined) ?? "").trim();
+  const interactions = (await readCrmInteractions()).filter((item) => !companyId || item.companyId === companyId).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  return response.json({ interactions });
+});
+
+app.delete("/api/crm/interactions/:id", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  const interactions = await readCrmInteractions();
+  const index = interactions.findIndex((item) => item.id === request.params.id);
+  if (index === -1) return response.status(404).json({ error: "Interacao nao encontrada." });
+  interactions.splice(index, 1);
+  await saveCrmInteractions(interactions);
+  return response.status(204).end();
+});
+
+app.patch("/api/crm/interactions/:id/follow-up", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  if (typeof request.body?.completed !== "boolean")
+    return response.status(400).json({ error: "Informe se o follow-up foi concluido." });
+  const interactions = await readCrmInteractions();
+  const interaction = interactions.find((item) => item.id === request.params.id);
+  if (!interaction) return response.status(404).json({ error: "Interacao nao encontrada." });
+  if (!interaction.nextStepDate)
+    return response.status(400).json({ error: "Esta interacao nao possui follow-up." });
+  interaction.nextStepCompletedAt = request.body.completed ? new Date().toISOString() : undefined;
+  await saveCrmInteractions(interactions);
+  return response.json({ interaction });
+});
+
+// ===== fim CRM =====
+app.post("/api/crm/interactions", async (request, response) => {
+  const user = await requireCrmAdmin(request, response);
+  if (!user) return;
+  const parsed = parseCrmInteractionInput(request.body);
+  if (!parsed.ok) return response.status(400).json({ error: parsed.error });
+  const source = (request.body ?? {}) as Record<string, unknown>;
+  const companyId = typeof source.companyId === "string" ? source.companyId.trim() : "";
+  if (!companyId) return response.status(400).json({ error: "Informe o cliente da interacao." });
+  const companies = await readCrmCompanies();
+  const company = companies.find((item) => item.id === companyId);
+  if (!company) return response.status(404).json({ error: "Cliente nao encontrado." });
+  if (parsed.value.contactId && !company.contacts.some((item) => item.id === parsed.value.contactId))
+    return response.status(400).json({ error: "O contato informado nao pertence a este cliente." });
+  const now = new Date().toISOString();
+  const interaction: CrmInteraction = { id: crypto.randomUUID(), companyId, contactId: parsed.value.contactId, type: parsed.value.type, summary: parsed.value.summary, detail: parsed.value.detail, nextStep: parsed.value.nextStep, nextStepDate: parsed.value.nextStepDate, authorId: user.id, authorName: user.name, createdAt: now };
+  const interactions = await readCrmInteractions();
+  interactions.push(interaction);
+  await saveCrmInteractions(interactions);
+  return response.status(201).json({ interaction });
+});
 app.post("/api/auth/google", async (request, response) => {
   const credential =
     typeof request.body?.credential === "string" ? request.body.credential : "";
