@@ -29,7 +29,9 @@ const langflowServerUrl = (
 const langflowApiKey = process.env.LANGFLOW_API_KEY;
 const langflowFinancialFlowId =
   process.env.LANGFLOW_FINANCIAL_FLOW_ID ??
-  "5cfee33d-9f0e-40e9-a0c1-e0b5f189e2b6";
+  "0db42ffc-7edc-4db3-b4f5-efa856ff3176";
+const langflowFinancialChatInputId =
+  process.env.LANGFLOW_FINANCIAL_CHAT_INPUT_ID ?? "ChatInput-2PdpE";
 const financialUpload = multer({
   storage: multer.memoryStorage(),
   limits: { files: 20, fileSize: 80 * 1024 * 1024 },
@@ -1027,6 +1029,46 @@ function findGeneratedArtifacts(value: unknown) {
   );
 }
 
+type LangflowStoredFile = {
+  id: string;
+  name?: string;
+  path?: string;
+  size?: number;
+};
+
+async function listLangflowStoredFiles(): Promise<LangflowStoredFile[]> {
+  if (!langflowApiKey) return [];
+  try {
+    const result = await fetch(`${langflowServerUrl}/api/v2/files`, {
+      headers: { "x-api-key": langflowApiKey },
+    });
+    if (!result.ok) return [];
+    const files = (await result.json()) as unknown;
+    if (!Array.isArray(files)) return [];
+    return files.filter(
+      (file): file is LangflowStoredFile =>
+        Boolean(file && typeof file === "object" && typeof file.id === "string"),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function storedFilesAsArtifacts(files: LangflowStoredFile[]) {
+  return files.map((file) => {
+    const storedPath = file.path ?? "";
+    const extension = path.extname(storedPath);
+    const baseName = path.basename(file.name || storedPath || "resultado");
+    const name = path.extname(baseName) || !extension ? baseName : `${baseName}${extension}`;
+    const source = `${langflowServerUrl}/api/v2/files/${file.id}`;
+    return {
+      name,
+      size: file.size,
+      url: `/api/financeiro/download?source=${encodeURIComponent(source)}&name=${encodeURIComponent(name)}`,
+    };
+  });
+}
+
 app.post(
   "/api/financeiro/analyze",
   financialUpload.array("files", 20),
@@ -1077,6 +1119,10 @@ app.post(
         uploadedPaths.push(uploadedPath);
       }
 
+      const storedFilesBeforeRun = new Set(
+        (await listLangflowStoredFiles()).map((file) => file.id),
+      );
+
       const runResponse = await fetch(
         `${langflowServerUrl}/api/v1/run/${langflowFinancialFlowId}?stream=true`,
         {
@@ -1092,7 +1138,7 @@ app.post(
             output_type: "chat",
             session_id: sessionId,
             tweaks: {
-              "ChatInput-JUWvA": { files: uploadedPaths },
+              [langflowFinancialChatInputId]: { files: uploadedPaths },
             },
           }),
         },
@@ -1137,7 +1183,12 @@ app.post(
               response.write(`data: ${JSON.stringify({ token: data.chunk })}\n\n`);
           }
           if (event.event === "end") {
-            const artifacts = findGeneratedArtifacts(event);
+            const newStoredFiles = (await listLangflowStoredFiles()).filter(
+              (file) => !storedFilesBeforeRun.has(file.id),
+            );
+            const artifacts = newStoredFiles.length
+              ? storedFilesAsArtifacts(newStoredFiles)
+              : findGeneratedArtifacts(event);
             if (artifacts.length)
               response.write(`data: ${JSON.stringify({ artifacts })}\n\n`);
             response.write("data: [DONE]\n\n");
