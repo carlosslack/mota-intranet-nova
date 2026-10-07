@@ -36,17 +36,6 @@ type ConversationMessage = {
   artifacts?: Artifact[];
 };
 
-const allowedExtensions = [
-  "pdf",
-  "doc",
-  "docx",
-  "xls",
-  "xlsx",
-  "csv",
-  "ppt",
-  "pptx",
-];
-
 function formatFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -127,9 +116,7 @@ export function FinancialWorkspace() {
 
   const addFiles = (selected: FileList | null) => {
     if (!selected) return;
-    const accepted = Array.from(selected).filter((selectedFile) =>
-      allowedExtensions.includes(fileExtension(selectedFile.name)),
-    );
+    const accepted = Array.from(selected);
     setFiles((current) => {
       const known = new Set(
         current.map((item) => `${item.name}-${item.size}-${item.lastModified}`),
@@ -141,11 +128,7 @@ export function FinancialWorkspace() {
         ),
       ];
     });
-    setError(
-      accepted.length < selected.length
-        ? "Alguns arquivos foram ignorados porque o formato não é compatível."
-        : "",
-    );
+    setError("");
   };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -307,7 +290,7 @@ export function FinancialWorkspace() {
             </span>
             <div>
               <strong>Documentos</strong>
-              <small>PDF e arquivos do Office</small>
+              <small>Todos os formatos de arquivo</small>
             </div>
           </div>
 
@@ -316,7 +299,6 @@ export function FinancialWorkspace() {
             className="financial-file-input"
             type="file"
             multiple
-            accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.ppt,.pptx"
             onChange={handleFileChange}
           />
 
