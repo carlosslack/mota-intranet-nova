@@ -2,6 +2,7 @@ import {
   AlertCircle,
   Bot,
   Check,
+  Database,
   Download,
   File,
   FileSpreadsheet,
@@ -20,6 +21,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useEffect,
   type ChangeEvent,
   type FormEvent,
 } from "react";
@@ -39,6 +41,15 @@ type ConversationMessage = {
 };
 
 type WorkspaceMode = "extract" | "chat";
+type SourceMode = "upload" | "database";
+
+type FinancialDatabase = {
+  id: string;
+  name: string;
+  files: Array<{ name: string; size: number; addedAt: string }>;
+  createdAt: string;
+  updatedAt: string;
+};
 
 const extractionSuggestions = [
   "CNPJ, razão social, número, emissão e valor total",
@@ -113,10 +124,18 @@ function artifactsFromText(text: string): Artifact[] {
 
 export function FinancialWorkspace() {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const databaseFileInputRef = useRef<HTMLInputElement>(null);
   const sessionIdRef = useRef(crypto.randomUUID());
   const [files, setFiles] = useState<File[]>([]);
   const [receivedFileKeys, setReceivedFileKeys] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<WorkspaceMode>("extract");
+  const [sourceMode, setSourceMode] = useState<SourceMode>("upload");
+  const [databases, setDatabases] = useState<FinancialDatabase[]>([]);
+  const [selectedDatabaseId, setSelectedDatabaseId] = useState("");
+  const [databaseName, setDatabaseName] = useState("");
+  const [databaseFiles, setDatabaseFiles] = useState<File[]>([]);
+  const [databaseBusy, setDatabaseBusy] = useState(false);
+  const [databaseNotice, setDatabaseNotice] = useState("");
   const [request, setRequest] = useState("");
   const [phase, setPhase] = useState<AgentPhase>("idle");
   const [error, setError] = useState("");
@@ -125,12 +144,41 @@ export function FinancialWorkspace() {
 
   const isBusy = ["uploading", "working", "streaming"].includes(phase);
   const hasSessionDocuments = receivedFileKeys.size > 0;
+  const selectedDatabase = databases.find(
+    (database) => database.id === selectedDatabaseId,
+  );
   const canSubmit =
-    request.trim().length > 0 && (files.length > 0 || hasSessionDocuments) && !isBusy;
+    request.trim().length > 0 &&
+    (files.length > 0 || hasSessionDocuments || Boolean(selectedDatabaseId)) &&
+    !isBusy;
   const totalSize = useMemo(
     () => files.reduce((total, current) => total + current.size, 0),
     [files],
   );
+
+  useEffect(() => {
+    void fetch("/api/financeiro/databases", { credentials: "include" })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const payload = (await response.json()) as { databases?: FinancialDatabase[] };
+        const loaded = payload.databases ?? [];
+        setDatabases(loaded);
+        const preferredId = localStorage.getItem("mota-financial-database");
+        const preferred = loaded.find((database) => database.id === preferredId) ?? loaded[0];
+        if (preferred) {
+          setSelectedDatabaseId(preferred.id);
+          setDatabaseName(preferred.name);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const chooseDatabase = (database: FinancialDatabase) => {
+    setSelectedDatabaseId(database.id);
+    setDatabaseName(database.name);
+    setDatabaseNotice("");
+    localStorage.setItem("mota-financial-database", database.id);
+  };
 
   const addFiles = (selected: FileList | null) => {
     if (!selected) return;
@@ -162,6 +210,58 @@ export function FinancialWorkspace() {
     });
   };
 
+  const addDatabaseFiles = (selected: FileList | null) => {
+    if (!selected) return;
+    setDatabaseFiles((current) => {
+      const known = new Set(current.map(fileKey));
+      return [...current, ...Array.from(selected).filter((file) => !known.has(fileKey(file)))];
+    });
+    setDatabaseNotice("");
+    setError("");
+  };
+
+  const saveDatabase = async () => {
+    const name = databaseName.trim();
+    if (!name || !databaseFiles.length || databaseBusy) return;
+    const body = new FormData();
+    body.append("name", name);
+    if (selectedDatabaseId) body.append("databaseId", selectedDatabaseId);
+    databaseFiles.forEach((file) => body.append("files", file));
+    setDatabaseBusy(true);
+    setDatabaseNotice("");
+    setError("");
+    try {
+      const response = await fetch("/api/financeiro/databases", {
+        method: "POST",
+        credentials: "include",
+        body,
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { database?: FinancialDatabase; error?: string }
+        | null;
+      if (!response.ok || !payload?.database)
+        throw new Error(payload?.error ?? "Não foi possível salvar a base.");
+      const saved = payload.database;
+      setDatabases((current) => [
+        saved,
+        ...current.filter((database) => database.id !== saved.id),
+      ]);
+      setSelectedDatabaseId(saved.id);
+      setDatabaseName(saved.name);
+      localStorage.setItem("mota-financial-database", saved.id);
+      setDatabaseFiles([]);
+      setDatabaseNotice("Arquivos gravados. Esta base já pode ser usada pelo agente.");
+    } catch (caughtError) {
+      setError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Não foi possível salvar a base.",
+      );
+    } finally {
+      setDatabaseBusy(false);
+    }
+  };
+
   const submitRequest = async (event: FormEvent) => {
     event.preventDefault();
     if (!canSubmit) return;
@@ -176,6 +276,7 @@ export function FinancialWorkspace() {
     const body = new FormData();
     body.append("message", messageText);
     body.append("sessionId", sessionId);
+    if (selectedDatabaseId) body.append("databaseId", selectedDatabaseId);
     const pendingFiles = files.filter((file) => !receivedFileKeys.has(fileKey(file)));
     pendingFiles.forEach((selectedFile) => body.append("files", selectedFile));
 
@@ -321,8 +422,33 @@ export function FinancialWorkspace() {
             </span>
             <div>
               <strong>Fontes da análise</strong>
-              <small>{files.length} {files.length === 1 ? "documento" : "documentos"}</small>
+              <small>
+                {sourceMode === "upload"
+                  ? `${files.length} ${files.length === 1 ? "documento" : "documentos"}`
+                  : `${databases.length} ${databases.length === 1 ? "base disponível" : "bases disponíveis"}`}
+              </small>
             </div>
+          </div>
+
+          <div className="financial-source-tabs" role="tablist" aria-label="Fonte dos documentos">
+            <button
+              type="button"
+              role="tab"
+              className={sourceMode === "upload" ? "is-active" : ""}
+              aria-selected={sourceMode === "upload"}
+              onClick={() => setSourceMode("upload")}
+            >
+              <UploadCloud size={15} /> Envio rápido
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={sourceMode === "database" ? "is-active" : ""}
+              aria-selected={sourceMode === "database"}
+              onClick={() => setSourceMode("database")}
+            >
+              <Database size={15} /> Banco de dados
+            </button>
           </div>
 
           <input
@@ -332,73 +458,147 @@ export function FinancialWorkspace() {
             multiple
             onChange={handleFileChange}
           />
-
-          {files.length === 0 ? (
-            <button
-              className="financial-upload-empty"
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <span>
-                <UploadCloud size={25} />
-              </span>
-              <strong>Arraste ou selecione</strong>
-              <small>Envie um ou vários arquivos, em qualquer formato</small>
-            </button>
-          ) : (
+          {sourceMode === "upload" ? (
             <>
-              <div className="financial-file-summary">
-                <span>
-                  {files.length} {files.length === 1 ? "arquivo" : "arquivos"}
-                </span>
-                <small>{formatFileSize(totalSize)}</small>
+              {files.length === 0 ? (
+                <button
+                  className="financial-upload-empty"
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <span><UploadCloud size={25} /></span>
+                  <strong>Arraste ou selecione</strong>
+                  <small>Envie um ou vários arquivos, em qualquer formato</small>
+                </button>
+              ) : (
+                <>
+                  <div className="financial-file-summary">
+                    <span>{files.length} {files.length === 1 ? "arquivo" : "arquivos"}</span>
+                    <small>{formatFileSize(totalSize)}</small>
+                  </div>
+                  <div className="financial-file-list">
+                    {files.map((selectedFile, index) => (
+                      <article className="financial-file-card" key={fileKey(selectedFile)}>
+                        <span className="financial-file-card__icon"><DocumentIcon name={selectedFile.name} /></span>
+                        <span className="financial-file-card__copy">
+                          <strong title={selectedFile.name}>{selectedFile.name}</strong>
+                          <small>
+                            {receivedFileKeys.has(fileKey(selectedFile))
+                              ? "Recebido pelo agente"
+                              : `${formatFileSize(selectedFile.size)} · pronto para enviar`}
+                          </small>
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={`Remover ${selectedFile.name}`}
+                          onClick={() => removeFile(index)}
+                          disabled={isBusy || receivedFileKeys.has(fileKey(selectedFile))}
+                        ><Trash2 size={16} /></button>
+                      </article>
+                    ))}
+                  </div>
+                  <button
+                    className="financial-add-file"
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isBusy}
+                  ><Plus size={16} /> Adicionar mais arquivos</button>
+                </>
+              )}
+              <div className="financial-files-note">
+                <Paperclip size={15} />
+                <span>O envio rápido mantém os arquivos somente nesta conversa.</span>
               </div>
-              <div className="financial-file-list">
-                {files.map((selectedFile, index) => (
-                  <article
-                    className="financial-file-card"
-                    key={fileKey(selectedFile)}
+            </>
+          ) : (
+            <div className="financial-database-panel">
+              <div className="financial-database-list">
+                {databases.map((database) => (
+                  <button
+                    type="button"
+                    key={database.id}
+                    className={database.id === selectedDatabaseId ? "is-active" : ""}
+                    onClick={() => chooseDatabase(database)}
                   >
-                    <span className="financial-file-card__icon">
-                      <DocumentIcon name={selectedFile.name} />
+                    <Database size={17} />
+                    <span>
+                      <strong>{database.name}</strong>
+                      <small>{database.files.length} {database.files.length === 1 ? "arquivo" : "arquivos"}</small>
                     </span>
-                    <span className="financial-file-card__copy">
-                      <strong title={selectedFile.name}>{selectedFile.name}</strong>
-                      <small>
-                        {receivedFileKeys.has(fileKey(selectedFile))
-                          ? "Recebido pelo agente"
-                          : `${formatFileSize(selectedFile.size)} · pronto para enviar`}
-                      </small>
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`Remover ${selectedFile.name}`}
-                      onClick={() => removeFile(index)}
-                      disabled={isBusy || receivedFileKeys.has(fileKey(selectedFile))}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </article>
+                    {database.id === selectedDatabaseId && <Check size={15} />}
+                  </button>
                 ))}
               </div>
-              <button
-                className="financial-add-file"
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isBusy}
-              >
-                <Plus size={16} /> Adicionar mais arquivos
-              </button>
-            </>
-          )}
 
-          <div className="financial-files-note">
-            <Paperclip size={15} />
-            <span>
-              Os arquivos confirmados permanecem disponíveis nesta conversa para
-              novos pedidos.
-            </span>
-          </div>
+              <button
+                type="button"
+                className="financial-new-database"
+                onClick={() => {
+                  setSelectedDatabaseId("");
+                  setDatabaseName("");
+                  setDatabaseFiles([]);
+                  setDatabaseNotice("");
+                }}
+              ><Plus size={15} /> Criar nova base</button>
+
+              <label className="financial-database-name">
+                <span>Nome do banco de dados</span>
+                <input
+                  value={databaseName}
+                  onChange={(event) => setDatabaseName(event.target.value)}
+                  placeholder="Ex.: Notas fiscais 2026"
+                  disabled={databaseBusy}
+                />
+              </label>
+
+              <input
+                ref={databaseFileInputRef}
+                className="financial-file-input"
+                type="file"
+                multiple
+                onChange={(event) => {
+                  addDatabaseFiles(event.target.files);
+                  event.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                className="financial-database-upload"
+                onClick={() => databaseFileInputRef.current?.click()}
+                disabled={databaseBusy}
+              >
+                <UploadCloud size={19} />
+                <span>
+                  <strong>Selecionar arquivos</strong>
+                  <small>{databaseFiles.length ? `${databaseFiles.length} prontos para gravar` : "Adicione tudo que quiser à base"}</small>
+                </span>
+              </button>
+              {databaseFiles.length > 0 && (
+                <div className="financial-database-pending">
+                  {databaseFiles.map((file, index) => (
+                    <span key={fileKey(file)}>
+                      {file.name}
+                      <button
+                        type="button"
+                        aria-label={`Remover ${file.name}`}
+                        onClick={() => setDatabaseFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                      ><Trash2 size={13} /></button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <button
+                type="button"
+                className="financial-save-database"
+                onClick={() => void saveDatabase()}
+                disabled={!databaseName.trim() || !databaseFiles.length || databaseBusy}
+              >
+                {databaseBusy ? <LoaderCircle className="financial-spinner" size={16} /> : <Database size={16} />}
+                {selectedDatabase ? "Adicionar à base" : "Criar banco de dados"}
+              </button>
+              {databaseNotice && <p className="financial-database-notice"><Check size={14} /> {databaseNotice}</p>}
+            </div>
+          )}
         </aside>
 
         <div className="financial-chat-panel">
@@ -580,11 +780,13 @@ export function FinancialWorkspace() {
             />
             <footer>
               <span>
-                {files.length > 0
+                {selectedDatabase
+                  ? `Banco de dados: ${selectedDatabase.name}`
+                  : files.length > 0
                   ? `${files.length} ${files.length === 1 ? "arquivo selecionado" : "arquivos selecionados"}`
                   : hasSessionDocuments
                     ? "Documentos disponíveis nesta conversa"
-                    : "Selecione ao menos um arquivo"}
+                    : "Selecione arquivos ou um banco de dados"}
               </span>
               <button type="submit" disabled={!canSubmit}>
                 {isBusy ? (

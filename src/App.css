@@ -2522,6 +2522,33 @@
 .financial-file-input {
   display: none;
 }
+.financial-source-tabs {
+  margin-bottom: 14px;
+  padding: 3px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 9px;
+  background: rgba(3, 10, 18, 0.45);
+}
+.financial-source-tabs button {
+  min-height: 35px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #718196;
+  cursor: pointer;
+  font-size: 9px;
+}
+.financial-source-tabs button.is-active {
+  color: #e1c37f;
+  background: rgba(202, 164, 94, 0.12);
+}
 .financial-upload-empty {
   width: 100%;
   min-height: 215px;
@@ -2676,6 +2703,167 @@
 .financial-files-note svg {
   flex: 0 0 auto;
   color: #947e54;
+}
+.financial-database-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.financial-database-list {
+  max-height: 180px;
+  display: grid;
+  gap: 7px;
+  overflow-y: auto;
+}
+.financial-database-list > button {
+  min-width: 0;
+  min-height: 54px;
+  padding: 9px 10px;
+  display: grid;
+  grid-template-columns: 27px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 9px;
+  background: rgba(4, 11, 19, 0.4);
+  color: #8190a3;
+  cursor: pointer;
+  text-align: left;
+}
+.financial-database-list > button.is-active {
+  border-color: rgba(202, 164, 94, 0.32);
+  color: #d9b973;
+  background: rgba(202, 164, 94, 0.075);
+}
+.financial-database-list > button > span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.financial-database-list strong {
+  overflow: hidden;
+  color: #dce4ea;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.financial-database-list small {
+  color: #718196;
+  font-size: 8px;
+}
+.financial-new-database {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid rgba(202, 164, 94, 0.16);
+  border-radius: 8px;
+  background: transparent;
+  color: #b99a5f;
+  cursor: pointer;
+  font-size: 9px;
+}
+.financial-database-name {
+  display: grid;
+  gap: 6px;
+  color: #7e8da0;
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.financial-database-name input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 11px;
+  border: 1px solid rgba(255, 255, 255, 0.085);
+  border-radius: 8px;
+  outline: 0;
+  background: rgba(3, 10, 18, 0.52);
+  color: #e1e7ec;
+  font: 10px Manrope, sans-serif;
+}
+.financial-database-name input:focus {
+  border-color: rgba(202, 164, 94, 0.42);
+}
+.financial-database-upload {
+  min-height: 58px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px dashed rgba(202, 164, 94, 0.3);
+  border-radius: 9px;
+  background: rgba(202, 164, 94, 0.035);
+  color: #c5a663;
+  cursor: pointer;
+  text-align: left;
+}
+.financial-database-upload > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.financial-database-upload strong { color: #dfe5ea; font-size: 10px; }
+.financial-database-upload small { color: #718196; font-size: 8px; }
+.financial-database-pending {
+  max-height: 105px;
+  display: grid;
+  gap: 5px;
+  overflow-y: auto;
+}
+.financial-database-pending > span {
+  min-width: 0;
+  min-height: 29px;
+  padding: 0 5px 0 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.035);
+  color: #9cabb9;
+  font-size: 8px;
+}
+.financial-database-pending > span > button {
+  width: 25px;
+  height: 25px;
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #7d8997;
+  cursor: pointer;
+}
+.financial-save-database {
+  min-height: 39px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 8px;
+  background: linear-gradient(120deg, #a8833e, #d0ae6b 60%, #e2c281);
+  color: #14202c;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 750;
+}
+.financial-save-database:disabled,
+.financial-database-upload:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+.financial-database-notice {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: #a8bb91;
+  font-size: 8px;
+  line-height: 1.5;
 }
 .financial-chat-panel {
   min-width: 0;

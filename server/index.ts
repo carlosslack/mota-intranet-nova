@@ -21,6 +21,7 @@ const allowedDomain = (
 const dataDirectory = path.resolve(process.env.DATA_DIR ?? "data");
 const ticketFile = path.join(dataDirectory, "tickets.json");
 const contentFile = path.join(dataDirectory, "content.json");
+const financialDatabasesFile = path.join(dataDirectory, "financial-databases.json");
 const localPreview = !isProduction && process.env.LOCAL_PREVIEW === "true";
 const langflowServerUrl = (
   process.env.LANGFLOW_SERVER_URL ??
@@ -32,6 +33,17 @@ const langflowFinancialFlowId =
   "0db42ffc-7edc-4db3-b4f5-efa856ff3176";
 const langflowFinancialChatInputId =
   process.env.LANGFLOW_FINANCIAL_CHAT_INPUT_ID ?? "ChatInput-2PdpE";
+const langflowFinancialKnowledgeId =
+  process.env.LANGFLOW_FINANCIAL_KNOWLEDGE_ID ?? "Knowledge-9xJWz";
+const langflowFinancialKnowledgeBase =
+  process.env.LANGFLOW_FINANCIAL_KNOWLEDGE_BASE ?? "chatcarlosw";
+const langflowFinancialIngestionFlowId =
+  process.env.LANGFLOW_FINANCIAL_INGESTION_FLOW_ID ??
+  "1f356e6e-f2b8-483a-94ed-7493d71f3d82";
+const langflowFinancialIngestionFileId =
+  process.env.LANGFLOW_FINANCIAL_INGESTION_FILE_ID ?? "File-fn1cq";
+const langflowFinancialIngestionKnowledgeId =
+  process.env.LANGFLOW_FINANCIAL_INGESTION_KNOWLEDGE_ID ?? "Knowledge-rEkav";
 const financialUpload = multer({
   storage: multer.memoryStorage(),
   limits: { files: 20, fileSize: 80 * 1024 * 1024 },
@@ -101,6 +113,14 @@ type ContentEntry = {
   subtitle?: string;
   body: string;
   createdAt: string;
+};
+type FinancialDatabase = {
+  id: string;
+  userId: string;
+  name: string;
+  files: Array<{ name: string; size: number; addedAt: string }>;
+  createdAt: string;
+  updatedAt: string;
 };
 
 const builtInWikiEntries: ContentEntry[] = [
@@ -247,6 +267,20 @@ async function readContent(): Promise<ContentEntry[]> {
 async function saveContent(entries: ContentEntry[]) {
   await mkdir(dataDirectory, { recursive: true });
   await writeFile(contentFile, JSON.stringify(entries, null, 2), "utf8");
+}
+
+async function readFinancialDatabases(): Promise<FinancialDatabase[]> {
+  try {
+    return JSON.parse(await readFile(financialDatabasesFile, "utf8")) as FinancialDatabase[];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function saveFinancialDatabases(databases: FinancialDatabase[]) {
+  await mkdir(dataDirectory, { recursive: true });
+  await writeFile(financialDatabasesFile, JSON.stringify(databases, null, 2), "utf8");
 }
 
 app.get("/api/auth/session", async (request, response) => {
@@ -1011,6 +1045,36 @@ function findLangflowFilePath(value: unknown): string | undefined {
   return undefined;
 }
 
+async function uploadFinancialFiles(
+  files: Express.Multer.File[],
+  flowId: string,
+) {
+  const uploadedPaths: string[] = [];
+  for (const file of files) {
+    const uploadBody = new FormData();
+    uploadBody.append(
+      "file",
+      new Blob([new Uint8Array(file.buffer)], { type: file.mimetype }),
+      file.originalname,
+    );
+    const uploadResponse = await fetch(
+      `${langflowServerUrl}/api/v1/files/upload/${flowId}`,
+      {
+        method: "POST",
+        headers: { "x-api-key": langflowApiKey ?? "" },
+        body: uploadBody,
+      },
+    );
+    if (!uploadResponse.ok)
+      throw new Error(`Falha ao enviar o arquivo ${file.originalname}.`);
+    const uploadedPath = findLangflowFilePath(await uploadResponse.json());
+    if (!uploadedPath)
+      throw new Error(`O Langflow não confirmou o arquivo ${file.originalname}.`);
+    uploadedPaths.push(uploadedPath);
+  }
+  return uploadedPaths;
+}
+
 function findGeneratedArtifacts(value: unknown) {
   const serialized = JSON.stringify(value);
   const matches =
@@ -1069,6 +1133,130 @@ function storedFilesAsArtifacts(files: LangflowStoredFile[]) {
   });
 }
 
+app.get("/api/financeiro/databases", async (request, response) => {
+  const user = await getRequestUser(request);
+  if (!user)
+    return response.status(401).json({ error: "Sessão ausente ou expirada." });
+  const databases = (await readFinancialDatabases())
+    .filter((database) => database.userId === user.id)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return response.json({ databases });
+});
+
+app.post(
+  "/api/financeiro/databases",
+  financialUpload.array("files", 20),
+  async (request, response) => {
+    const user = await getRequestUser(request);
+    if (!user)
+      return response.status(401).json({ error: "Sessão ausente ou expirada." });
+    if (!langflowApiKey)
+      return response.status(503).json({
+        error: "A conexão com a base de conhecimento ainda não foi configurada.",
+      });
+
+    const name =
+      typeof request.body?.name === "string" ? request.body.name.trim() : "";
+    const requestedId =
+      typeof request.body?.databaseId === "string"
+        ? request.body.databaseId.trim()
+        : "";
+    const files = (request.files ?? []) as Express.Multer.File[];
+    if (!name || name.length > 80)
+      return response.status(400).json({ error: "Informe um nome válido para a base." });
+    if (!files.length)
+      return response.status(400).json({ error: "Selecione ao menos um arquivo." });
+
+    const databases = await readFinancialDatabases();
+    const existing = requestedId
+      ? databases.find(
+          (database) => database.id === requestedId && database.userId === user.id,
+        )
+      : databases.find(
+          (database) =>
+            database.userId === user.id &&
+            database.name.toLocaleLowerCase("pt-BR") ===
+              name.toLocaleLowerCase("pt-BR"),
+        );
+    const now = new Date().toISOString();
+    const database: FinancialDatabase = existing ?? {
+      id: crypto.randomUUID(),
+      userId: user.id,
+      name,
+      files: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    try {
+      const uploadedPaths = await uploadFinancialFiles(
+        files,
+        langflowFinancialIngestionFlowId,
+      );
+      const ingestionResponse = await fetch(
+        `${langflowServerUrl}/api/v1/run/${langflowFinancialIngestionFlowId}?stream=false`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": langflowApiKey,
+          },
+          body: JSON.stringify({
+            input_value: `Adicionar ${files.length} arquivo(s) à base ${database.name}`,
+            input_type: "chat",
+            output_type: "chat",
+            session_id: crypto.randomUUID(),
+            tweaks: {
+              [langflowFinancialIngestionFileId]: { path: uploadedPaths },
+              [langflowFinancialIngestionKnowledgeId]: {
+                knowledge_base: langflowFinancialKnowledgeBase,
+                mode: "Ingest",
+                allow_duplicates: true,
+                metadata_json: JSON.stringify({
+                  owner: user.id,
+                  database: database.id,
+                  database_name: database.name,
+                }),
+              },
+            },
+          }),
+        },
+      );
+      if (!ingestionResponse.ok) {
+        const details = await ingestionResponse.text();
+        console.error("Langflow recusou a ingestão financeira:", details.slice(0, 600));
+        return response
+          .status(502)
+          .json({ error: "O Langflow não conseguiu gravar os documentos na base." });
+      }
+
+      database.name = name;
+      database.updatedAt = now;
+      database.files.push(
+        ...files.map((file) => ({
+          name: file.originalname,
+          size: file.size,
+          addedAt: now,
+        })),
+      );
+      if (!existing) databases.push(database);
+      await saveFinancialDatabases(databases);
+      return response.status(existing ? 200 : 201).json({ database });
+    } catch (error) {
+      console.error(
+        "Falha ao alimentar a base financeira:",
+        error instanceof Error ? error.message : "erro desconhecido",
+      );
+      return response.status(502).json({
+        error:
+          error instanceof Error
+            ? error.message
+            : "Não foi possível alimentar a base de conhecimento.",
+      });
+    }
+  },
+);
+
 app.post(
   "/api/financeiro/analyze",
   financialUpload.array("files", 20),
@@ -1088,33 +1276,22 @@ app.post(
         ? request.body.sessionId.trim()
         : crypto.randomUUID();
     const files = (request.files ?? []) as Express.Multer.File[];
+    const databaseId =
+      typeof request.body?.databaseId === "string"
+        ? request.body.databaseId.trim()
+        : "";
     if (!message)
       return response.status(400).json({ error: "Descreva o que deseja analisar." });
     try {
-      const uploadedPaths: string[] = [];
-      for (const file of files) {
-        const uploadBody = new FormData();
-        uploadBody.append(
-          "file",
-          new Blob([new Uint8Array(file.buffer)], { type: file.mimetype }),
-          file.originalname,
-        );
-        const uploadResponse = await fetch(
-          `${langflowServerUrl}/api/v1/files/upload/${langflowFinancialFlowId}`,
-          {
-            method: "POST",
-            headers: { "x-api-key": langflowApiKey },
-            body: uploadBody,
-          },
-        );
-        if (!uploadResponse.ok)
-          throw new Error(`Falha ao enviar o arquivo ${file.originalname}.`);
-        const uploadResult = (await uploadResponse.json()) as unknown;
-        const uploadedPath = findLangflowFilePath(uploadResult);
-        if (!uploadedPath)
-          throw new Error(`O Langflow não confirmou o arquivo ${file.originalname}.`);
-        uploadedPaths.push(uploadedPath);
-      }
+      const selectedDatabase = databaseId
+        ? (await readFinancialDatabases()).find(
+            (database) => database.id === databaseId && database.userId === user.id,
+          )
+        : undefined;
+      if (databaseId && !selectedDatabase)
+        return response.status(404).json({ error: "Base de dados não encontrada." });
+
+      const uploadedPaths = await uploadFinancialFiles(files, langflowFinancialFlowId);
 
       const storedFilesBeforeRun = new Set(
         (await listLangflowStoredFiles()).map((file) => file.id),
@@ -1134,13 +1311,19 @@ app.post(
             input_type: "chat",
             output_type: "chat",
             session_id: sessionId,
-            ...(uploadedPaths.length
-              ? {
-                  tweaks: {
-                    [langflowFinancialChatInputId]: { files: uploadedPaths },
-                  },
-                }
-              : {}),
+            tweaks: {
+              ...(uploadedPaths.length
+                ? { [langflowFinancialChatInputId]: { files: uploadedPaths } }
+                : {}),
+              [langflowFinancialKnowledgeId]: {
+                knowledge_base: langflowFinancialKnowledgeBase,
+                mode: "Retrieve",
+                metadata_filter: JSON.stringify({
+                  owner: user.id,
+                  database: selectedDatabase?.id ?? "__sem_base__",
+                }),
+              },
+            },
           }),
         },
       );
