@@ -6,7 +6,9 @@ import {
   File,
   FileSpreadsheet,
   FileText,
+  Files,
   LoaderCircle,
+  MessageSquareText,
   Paperclip,
   Plus,
   ReceiptText,
@@ -35,6 +37,18 @@ type ConversationMessage = {
   text: string;
   artifacts?: Artifact[];
 };
+
+type WorkspaceMode = "extract" | "chat";
+
+const extractionSuggestions = [
+  "CNPJ, razão social, número, emissão e valor total",
+  "Some os valores e organize por fornecedor",
+  "Liste impostos, vencimentos e formas de pagamento",
+];
+
+function fileKey(file: File) {
+  return `${file.name}-${file.size}-${file.lastModified}`;
+}
 
 function formatFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -101,6 +115,8 @@ export function FinancialWorkspace() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sessionIdRef = useRef(crypto.randomUUID());
   const [files, setFiles] = useState<File[]>([]);
+  const [receivedFileKeys, setReceivedFileKeys] = useState<Set<string>>(new Set());
+  const [mode, setMode] = useState<WorkspaceMode>("extract");
   const [request, setRequest] = useState("");
   const [phase, setPhase] = useState<AgentPhase>("idle");
   const [error, setError] = useState("");
@@ -108,7 +124,9 @@ export function FinancialWorkspace() {
   const [streamedText, setStreamedText] = useState("");
 
   const isBusy = ["uploading", "working", "streaming"].includes(phase);
-  const canSubmit = files.length > 0 && request.trim().length > 0 && !isBusy;
+  const hasSessionDocuments = receivedFileKeys.size > 0;
+  const canSubmit =
+    request.trim().length > 0 && (files.length > 0 || hasSessionDocuments) && !isBusy;
   const totalSize = useMemo(
     () => files.reduce((total, current) => total + current.size, 0),
     [files],
@@ -119,12 +137,12 @@ export function FinancialWorkspace() {
     const accepted = Array.from(selected);
     setFiles((current) => {
       const known = new Set(
-        current.map((item) => `${item.name}-${item.size}-${item.lastModified}`),
+        current.map(fileKey),
       );
       return [
         ...current,
         ...accepted.filter(
-          (item) => !known.has(`${item.name}-${item.size}-${item.lastModified}`),
+          (item) => !known.has(fileKey(item)),
         ),
       ];
     });
@@ -137,7 +155,11 @@ export function FinancialWorkspace() {
   };
 
   const removeFile = (index: number) => {
-    setFiles((current) => current.filter((_, currentIndex) => currentIndex !== index));
+    setFiles((current) => {
+      const selected = current[index];
+      if (!selected || receivedFileKeys.has(fileKey(selected))) return current;
+      return current.filter((_, currentIndex) => currentIndex !== index);
+    });
   };
 
   const submitRequest = async (event: FormEvent) => {
@@ -154,13 +176,14 @@ export function FinancialWorkspace() {
     const body = new FormData();
     body.append("message", messageText);
     body.append("sessionId", sessionId);
-    files.forEach((selectedFile) => body.append("files", selectedFile));
+    const pendingFiles = files.filter((file) => !receivedFileKeys.has(fileKey(file)));
+    pendingFiles.forEach((selectedFile) => body.append("files", selectedFile));
 
     setMessages((current) => [...current, userMessage]);
     setRequest("");
     setError("");
     setStreamedText("");
-    setPhase("uploading");
+    setPhase(pendingFiles.length ? "uploading" : "working");
 
     try {
       const response = await fetch("/api/financeiro/analyze", {
@@ -175,6 +198,13 @@ export function FinancialWorkspace() {
         throw new Error(payload?.error ?? "Não foi possível iniciar a análise.");
       }
 
+      if (pendingFiles.length) {
+        setReceivedFileKeys((current) => {
+          const next = new Set(current);
+          pendingFiles.forEach((file) => next.add(fileKey(file)));
+          return next;
+        });
+      }
       setPhase("working");
       if (!response.body) throw new Error("O agente não iniciou o streaming.");
 
@@ -252,6 +282,7 @@ export function FinancialWorkspace() {
   const startNewAnalysis = () => {
     if (isBusy) return;
     setFiles([]);
+    setReceivedFileKeys(new Set());
     setMessages([]);
     setRequest("");
     setError("");
@@ -263,11 +294,11 @@ export function FinancialWorkspace() {
     <section className="financial-page">
       <header className="financial-page__header">
         <div>
-          <p className="eyebrow">Assistente financeiro</p>
-          <h1>Organize documentos em uma planilha</h1>
+          <p className="eyebrow">Financeiro · Documentos com IA</p>
+          <h1>Transforme documentos em respostas e arquivos</h1>
           <p>
-            Anexe os arquivos, descreva os dados que precisa e acompanhe a análise
-            até a planilha ficar pronta.
+            Envie seus documentos, diga o que precisa e acompanhe o trabalho do
+            agente até o resultado ficar pronto para baixar.
           </p>
         </div>
         {(files.length > 0 || messages.length > 0) && (
@@ -289,8 +320,8 @@ export function FinancialWorkspace() {
               <ReceiptText size={19} />
             </span>
             <div>
-              <strong>Documentos</strong>
-              <small>Todos os formatos de arquivo</small>
+              <strong>Fontes da análise</strong>
+              <small>{files.length} {files.length === 1 ? "documento" : "documentos"}</small>
             </div>
           </div>
 
@@ -311,8 +342,8 @@ export function FinancialWorkspace() {
               <span>
                 <UploadCloud size={25} />
               </span>
-              <strong>Selecionar arquivos</strong>
-              <small>Escolha uma ou várias notas e documentos</small>
+              <strong>Arraste ou selecione</strong>
+              <small>Envie um ou vários arquivos, em qualquer formato</small>
             </button>
           ) : (
             <>
@@ -326,20 +357,24 @@ export function FinancialWorkspace() {
                 {files.map((selectedFile, index) => (
                   <article
                     className="financial-file-card"
-                    key={`${selectedFile.name}-${selectedFile.size}-${selectedFile.lastModified}`}
+                    key={fileKey(selectedFile)}
                   >
                     <span className="financial-file-card__icon">
                       <DocumentIcon name={selectedFile.name} />
                     </span>
                     <span className="financial-file-card__copy">
                       <strong title={selectedFile.name}>{selectedFile.name}</strong>
-                      <small>{formatFileSize(selectedFile.size)}</small>
+                      <small>
+                        {receivedFileKeys.has(fileKey(selectedFile))
+                          ? "Recebido pelo agente"
+                          : `${formatFileSize(selectedFile.size)} · pronto para enviar`}
+                      </small>
                     </span>
                     <button
                       type="button"
                       aria-label={`Remover ${selectedFile.name}`}
                       onClick={() => removeFile(index)}
-                      disabled={isBusy}
+                      disabled={isBusy || receivedFileKeys.has(fileKey(selectedFile))}
                     >
                       <Trash2 size={16} />
                     </button>
@@ -359,20 +394,42 @@ export function FinancialWorkspace() {
 
           <div className="financial-files-note">
             <Paperclip size={15} />
-            <span>Os documentos selecionados serão enviados juntos para a análise.</span>
+            <span>
+              Os arquivos confirmados permanecem disponíveis nesta conversa para
+              novos pedidos.
+            </span>
           </div>
         </aside>
 
         <div className="financial-chat-panel">
+          <div className="financial-mode-switch" role="tablist" aria-label="Modo de trabalho">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "extract"}
+              className={mode === "extract" ? "is-active" : ""}
+              onClick={() => setMode("extract")}
+            >
+              <FileSpreadsheet size={17} />
+              Gerar arquivo
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "chat"}
+              className={mode === "chat" ? "is-active" : ""}
+              onClick={() => setMode("chat")}
+            >
+              <MessageSquareText size={17} />
+              Conversar com documentos
+            </button>
+          </div>
+
           <div className="financial-chat-heading">
-            <span className="financial-agent-avatar">
-              <Bot size={19} />
-            </span>
+            <span className="financial-agent-avatar"><Bot size={19} /></span>
             <div>
               <strong>Agente financeiro</strong>
-              <small>
-                <span /> Disponível para uma nova análise
-              </small>
+              <small><span /> Pronto para trabalhar com seus documentos</small>
             </div>
           </div>
 
@@ -380,12 +437,17 @@ export function FinancialWorkspace() {
             {messages.length === 0 && phase === "idle" ? (
               <div className="financial-chat-empty">
                 <span>
-                  <FileSpreadsheet size={28} />
+                  {mode === "extract" ? <FileSpreadsheet size={28} /> : <Files size={28} />}
                 </span>
-                <h2>O que você quer receber na planilha?</h2>
+                <h2>
+                  {mode === "extract"
+                    ? "Qual resultado você quer receber?"
+                    : "O que deseja saber sobre os documentos?"}
+                </h2>
                 <p>
-                  Primeiro selecione os documentos. Depois escreva quais informações
-                  o agente deve organizar para você.
+                  {mode === "extract"
+                    ? "Selecione os arquivos e descreva as colunas, cálculos ou organização que precisa."
+                    : "Selecione os arquivos e converse livremente com o agente sobre o conteúdo."}
                 </p>
               </div>
             ) : (
@@ -491,10 +553,28 @@ export function FinancialWorkspace() {
           )}
 
           <form className="financial-composer" onSubmit={submitRequest}>
+            {mode === "extract" && (
+              <div className="financial-suggestions" aria-label="Sugestões de extração">
+                {extractionSuggestions.map((suggestion) => (
+                  <button
+                    type="button"
+                    key={suggestion}
+                    onClick={() => setRequest(suggestion)}
+                    disabled={isBusy}
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+            )}
             <textarea
               value={request}
               onChange={(event) => setRequest(event.target.value)}
-              placeholder="Descreva quais informações deseja organizar na planilha…"
+              placeholder={
+                mode === "extract"
+                  ? "Ex.: Gere uma planilha com CNPJ, razão social, valor, impostos e data de emissão…"
+                  : "Faça uma pergunta sobre os documentos…"
+              }
               rows={3}
               disabled={isBusy}
             />
@@ -502,7 +582,9 @@ export function FinancialWorkspace() {
               <span>
                 {files.length > 0
                   ? `${files.length} ${files.length === 1 ? "arquivo selecionado" : "arquivos selecionados"}`
-                  : "Selecione ao menos um arquivo"}
+                  : hasSessionDocuments
+                    ? "Documentos disponíveis nesta conversa"
+                    : "Selecione ao menos um arquivo"}
               </span>
               <button type="submit" disabled={!canSubmit}>
                 {isBusy ? (
@@ -510,7 +592,7 @@ export function FinancialWorkspace() {
                 ) : (
                   <Send size={17} />
                 )}
-                Enviar para análise
+                {mode === "extract" ? "Gerar resultado" : "Enviar mensagem"}
               </button>
             </footer>
           </form>

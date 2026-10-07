@@ -1090,9 +1090,6 @@ app.post(
     const files = (request.files ?? []) as Express.Multer.File[];
     if (!message)
       return response.status(400).json({ error: "Descreva o que deseja analisar." });
-    if (!files.length)
-      return response.status(400).json({ error: "Selecione ao menos um arquivo." });
-
     try {
       const uploadedPaths: string[] = [];
       for (const file of files) {
@@ -1137,9 +1134,13 @@ app.post(
             input_type: "chat",
             output_type: "chat",
             session_id: sessionId,
-            tweaks: {
-              [langflowFinancialChatInputId]: { files: uploadedPaths },
-            },
+            ...(uploadedPaths.length
+              ? {
+                  tweaks: {
+                    [langflowFinancialChatInputId]: { files: uploadedPaths },
+                  },
+                }
+              : {}),
           }),
         },
       );

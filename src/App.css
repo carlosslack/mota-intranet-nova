@@ -2464,7 +2464,7 @@
   opacity: 0.45;
 }
 .financial-workspace {
-  min-height: 620px;
+  min-height: 650px;
   display: grid;
   grid-template-columns: minmax(280px, 0.78fr) minmax(500px, 1.65fr);
   overflow: hidden;
@@ -2680,14 +2680,47 @@
 .financial-chat-panel {
   min-width: 0;
   display: grid;
-  grid-template-rows: auto minmax(360px, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(300px, 1fr) auto auto;
   background:
     radial-gradient(circle at 85% 0, rgba(38, 75, 106, 0.11), transparent 37%),
     #081421;
 }
+.financial-mode-switch {
+  margin: 18px 24px 0;
+  padding: 4px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 11px;
+  background: rgba(3, 10, 18, 0.5);
+}
+.financial-mode-switch button {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #77879a;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
+}
+.financial-mode-switch button:hover {
+  color: #cbd5df;
+}
+.financial-mode-switch button.is-active {
+  border-color: rgba(202, 164, 94, 0.24);
+  background: linear-gradient(135deg, rgba(202, 164, 94, 0.17), rgba(202, 164, 94, 0.08));
+  color: #e3c584;
+  box-shadow: 0 8px 24px rgba(2, 8, 14, 0.18);
+}
 .financial-chat-heading {
-  min-height: 78px;
-  padding: 18px 24px;
+  min-height: 72px;
+  padding: 15px 24px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 .financial-agent-avatar {
@@ -2922,6 +2955,32 @@
   overflow: hidden;
   transition: border-color 0.2s ease;
 }
+.financial-suggestions {
+  padding: 10px 10px 0;
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+}
+.financial-suggestions button {
+  min-height: 29px;
+  flex: 0 0 auto;
+  padding: 0 10px;
+  border: 1px solid rgba(117, 151, 184, 0.17);
+  border-radius: 999px;
+  background: rgba(17, 36, 55, 0.7);
+  color: #93a4b7;
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 550;
+}
+.financial-suggestions button:hover {
+  border-color: rgba(202, 164, 94, 0.32);
+  color: #dbc183;
+}
+.financial-suggestions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
 .financial-composer:focus-within {
   border-color: rgba(202, 164, 94, 0.48);
   box-shadow: 0 0 0 3px rgba(202, 164, 94, 0.055);
@@ -2959,7 +3018,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.financial-composer button {
+.financial-composer footer button {
   min-height: 35px;
   padding: 0 13px;
   display: inline-flex;
@@ -2974,7 +3033,7 @@
   font-size: 10px;
   font-weight: 700;
 }
-.financial-composer button:disabled {
+.financial-composer footer button:disabled {
   cursor: not-allowed;
   filter: saturate(0.35);
   opacity: 0.42;
@@ -2996,6 +3055,10 @@
     padding-right: 18px;
   }
   .financial-composer {
+    margin-left: 18px;
+    margin-right: 18px;
+  }
+  .financial-mode-switch {
     margin-left: 18px;
     margin-right: 18px;
   }
@@ -3047,6 +3110,10 @@
   .financial-composer {
     margin: 0 14px 14px;
   }
+  .financial-mode-switch {
+    margin: 14px 14px 0;
+    grid-template-columns: 1fr;
+  }
   .financial-composer footer {
     align-items: stretch;
     flex-direction: column;
@@ -3054,7 +3121,7 @@
   .financial-composer footer > span {
     padding-top: 3px;
   }
-  .financial-composer button {
+  .financial-composer footer button {
     width: 100%;
   }
 }
