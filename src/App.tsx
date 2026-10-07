@@ -28,6 +28,7 @@ import { MeetingScheduler } from "./components/MeetingScheduler";
 import { SupportCenter as ConnectedSupportCenter } from "./components/SupportCenter";
 import { ContentWorkspace } from "./components/ContentWorkspace";
 import { CrmWorkspace } from "./components/CrmWorkspace";
+import { FinancialWorkspace } from "./components/FinancialWorkspace";
 import "./App.css";
 
 type Section =
@@ -561,6 +562,8 @@ function App() {
             <WorkspaceHub navigate={navigate} />
           ) : section === "reunioes" ? (
             <MeetingScheduler />
+          ) : section === "financeiro" ? (
+            <FinancialWorkspace />
           ) : section === "procedimentos" ? (
             <ContentWorkspace module="wiki" user={user} />
           ) : section === "comunicados" ? (

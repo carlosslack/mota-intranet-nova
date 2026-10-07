@@ -11,6 +11,9 @@ services:
       ALLOWED_EMAIL_DOMAIN: mota.adv.br
       ADMIN_EMAILS: ti@mota.adv.br
       DATA_DIR: /app/data
+      LANGFLOW_SERVER_URL: ${LANGFLOW_SERVER_URL}
+      LANGFLOW_API_KEY: ${LANGFLOW_API_KEY}
+      LANGFLOW_FINANCIAL_FLOW_ID: ${LANGFLOW_FINANCIAL_FLOW_ID}
     volumes:
       - intranet-data:/app/data
     healthcheck:

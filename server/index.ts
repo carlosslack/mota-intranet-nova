@@ -2,13 +2,14 @@ import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import express from "express";
+import multer from "multer";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { OAuth2Client } from "google-auth-library";
 import { SignJWT, jwtVerify } from "jose";
 
-dotenv.config({ path: ".env.local" });
+dotenv.config({ path: [".env.langflow.local", ".env.local"] });
 
 const port = Number(process.env.PORT ?? 3002);
 const isProduction = process.env.NODE_ENV === "production";
@@ -21,6 +22,18 @@ const dataDirectory = path.resolve(process.env.DATA_DIR ?? "data");
 const ticketFile = path.join(dataDirectory, "tickets.json");
 const contentFile = path.join(dataDirectory, "content.json");
 const localPreview = !isProduction && process.env.LOCAL_PREVIEW === "true";
+const langflowServerUrl = (
+  process.env.LANGFLOW_SERVER_URL ??
+  "https://langflow-t3ln.srv1763356.hstgr.cloud"
+).replace(/\/$/, "");
+const langflowApiKey = process.env.LANGFLOW_API_KEY;
+const langflowFinancialFlowId =
+  process.env.LANGFLOW_FINANCIAL_FLOW_ID ??
+  "5cfee33d-9f0e-40e9-a0c1-e0b5f189e2b6";
+const financialUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { files: 20, fileSize: 80 * 1024 * 1024 },
+});
 const adminEmails = new Set(
   (process.env.ADMIN_EMAILS ?? "ti@mota.adv.br")
     .split(",")
@@ -974,6 +987,222 @@ app.post("/api/auth/google", async (request, response) => {
 app.post("/api/auth/logout", (_request, response) => {
   response.clearCookie("mota_session", { path: "/" });
   return response.status(204).end();
+});
+
+function findLangflowFilePath(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findLangflowFilePath(item);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of ["file_path", "path", "file", "url"]) {
+    if (typeof record[key] === "string" && record[key]) return record[key];
+  }
+  for (const nested of Object.values(record)) {
+    const found = findLangflowFilePath(nested);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function findGeneratedArtifacts(value: unknown) {
+  const serialized = JSON.stringify(value);
+  const matches =
+    serialized.match(/https?:\\?\/\\?\/[^\s<>"']+\.(?:xlsx|xls|csv)(?:\?[^\s<>"']*)?/gi) ?? [];
+  return [...new Set(matches.map((match) => match.replaceAll("\\/", "/")))].map(
+    (source) => {
+      const sourceUrl = new URL(source);
+      const name = decodeURIComponent(
+        sourceUrl.pathname.split("/").pop() ?? "planilha.xlsx",
+      );
+      return {
+        name,
+        url: `/api/financeiro/download?source=${encodeURIComponent(source)}&name=${encodeURIComponent(name)}`,
+      };
+    },
+  );
+}
+
+app.post(
+  "/api/financeiro/analyze",
+  financialUpload.array("files", 20),
+  async (request, response) => {
+    const user = await getRequestUser(request);
+    if (!user)
+      return response.status(401).json({ error: "Sessão ausente ou expirada." });
+    if (!langflowApiKey)
+      return response.status(503).json({
+        error: "A conexão com o agente financeiro ainda não foi configurada.",
+      });
+
+    const message =
+      typeof request.body?.message === "string" ? request.body.message.trim() : "";
+    const sessionId =
+      typeof request.body?.sessionId === "string" && request.body.sessionId.trim()
+        ? request.body.sessionId.trim()
+        : crypto.randomUUID();
+    const files = (request.files ?? []) as Express.Multer.File[];
+    if (!message)
+      return response.status(400).json({ error: "Descreva o que deseja analisar." });
+    if (!files.length)
+      return response.status(400).json({ error: "Selecione ao menos um arquivo." });
+
+    try {
+      const uploadedPaths: string[] = [];
+      for (const file of files) {
+        const uploadBody = new FormData();
+        uploadBody.append(
+          "file",
+          new Blob([new Uint8Array(file.buffer)], { type: file.mimetype }),
+          file.originalname,
+        );
+        const uploadResponse = await fetch(
+          `${langflowServerUrl}/api/v1/files/upload/${langflowFinancialFlowId}`,
+          {
+            method: "POST",
+            headers: { "x-api-key": langflowApiKey },
+            body: uploadBody,
+          },
+        );
+        if (!uploadResponse.ok)
+          throw new Error(`Falha ao enviar o arquivo ${file.originalname}.`);
+        const uploadResult = (await uploadResponse.json()) as unknown;
+        const uploadedPath = findLangflowFilePath(uploadResult);
+        if (!uploadedPath)
+          throw new Error(`O Langflow não confirmou o arquivo ${file.originalname}.`);
+        uploadedPaths.push(uploadedPath);
+      }
+
+      const runResponse = await fetch(
+        `${langflowServerUrl}/api/v1/run/${langflowFinancialFlowId}?stream=true`,
+        {
+          method: "POST",
+          headers: {
+            accept: "text/event-stream",
+            "content-type": "application/json",
+            "x-api-key": langflowApiKey,
+          },
+          body: JSON.stringify({
+            input_value: message,
+            input_type: "chat",
+            output_type: "chat",
+            session_id: sessionId,
+            tweaks: {
+              "ChatInput-JUWvA": { files: uploadedPaths },
+            },
+          }),
+        },
+      );
+      if (!runResponse.ok) {
+        const details = await runResponse.text();
+        console.error("Langflow recusou a análise financeira:", details.slice(0, 600));
+        return response
+          .status(502)
+          .json({ error: "O agente financeiro não conseguiu iniciar a análise." });
+      }
+      if (!runResponse.body)
+        return response
+          .status(502)
+          .json({ error: "O agente não iniciou a resposta em tempo real." });
+
+      response.status(200);
+      response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      response.setHeader("Cache-Control", "no-cache, no-transform");
+      response.setHeader("Connection", "keep-alive");
+      response.flushHeaders();
+
+      const decoder = new TextDecoder();
+      let streamBuffer = "";
+      let completed = false;
+      for await (const chunk of runResponse.body) {
+        streamBuffer += decoder.decode(chunk, { stream: true });
+        const lines = streamBuffer.split("\n");
+        streamBuffer = lines.pop() ?? "";
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line) continue;
+          let event: Record<string, unknown>;
+          try {
+            event = JSON.parse(line) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          if (event.event === "token") {
+            const data = event.data as Record<string, unknown> | undefined;
+            if (typeof data?.chunk === "string")
+              response.write(`data: ${JSON.stringify({ token: data.chunk })}\n\n`);
+          }
+          if (event.event === "end") {
+            const artifacts = findGeneratedArtifacts(event);
+            if (artifacts.length)
+              response.write(`data: ${JSON.stringify({ artifacts })}\n\n`);
+            response.write("data: [DONE]\n\n");
+            completed = true;
+          }
+        }
+      }
+      if (!completed) response.write("data: [DONE]\n\n");
+      return response.end();
+    } catch (error) {
+      console.error(
+        "Falha na integração financeira:",
+        error instanceof Error ? error.message : "erro desconhecido",
+      );
+      if (response.headersSent) {
+        response.write(
+          `\ndata: ${JSON.stringify({ error: "A análise foi interrompida." })}\n\n`,
+        );
+        return response.end();
+      }
+      return response.status(502).json({
+        error:
+          error instanceof Error
+            ? error.message
+            : "Não foi possível concluir a análise.",
+      });
+    }
+  },
+);
+
+app.get("/api/financeiro/download", async (request, response) => {
+  const user = await getRequestUser(request);
+  if (!user)
+    return response.status(401).json({ error: "Sessão ausente ou expirada." });
+  if (!langflowApiKey)
+    return response.status(503).json({ error: "Integração não configurada." });
+  const source = typeof request.query.source === "string" ? request.query.source : "";
+  const name =
+    typeof request.query.name === "string" && request.query.name.trim()
+      ? path.basename(request.query.name.trim())
+      : "planilha.xlsx";
+  if (!source)
+    return response.status(400).json({ error: "Arquivo não informado." });
+  try {
+    const target = new URL(source, `${langflowServerUrl}/`);
+    if (target.origin !== new URL(langflowServerUrl).origin)
+      return response.status(400).json({ error: "Endereço de arquivo inválido." });
+    const upstream = await fetch(target, {
+      headers: { "x-api-key": langflowApiKey },
+    });
+    if (!upstream.ok || !upstream.body)
+      return response.status(404).json({ error: "Arquivo não encontrado." });
+    response.setHeader(
+      "Content-Type",
+      upstream.headers.get("content-type") ?? "application/octet-stream",
+    );
+    response.setHeader(
+      "Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+    );
+    for await (const chunk of upstream.body) response.write(Buffer.from(chunk));
+    return response.end();
+  } catch {
+    return response.status(400).json({ error: "Não foi possível baixar o arquivo." });
+  }
 });
 
 app.get("/api/health", (_request, response) => {
